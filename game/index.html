@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Paper Storm: pilot a paper plane through an ink storm. Dodge the blots, stamp the letters, break the Tempest.">
+<title>Paper Storm — a paper plane through an ink storm</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #20242E;
+    min-height: 100%;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  #wrap {
+    width: min(1280px, 100vw);
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 9;
+    background: #F2E8D5;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55);
+    cursor: crosshair;
+  }
+  #hint {
+    color: #8A93A8;
+    font-size: 13px;
+    text-align: center;
+    padding: 8px 0 12px;
+    letter-spacing: 0.04em;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="1280" height="720"></canvas>
+  <div id="hint">PAPER STORM — MOUSE OR WASD TO STEER &nbsp;·&nbsp; SPACE TO FOLD-DASH &nbsp;·&nbsp; P PAUSE &nbsp;·&nbsp; M MUTE</div>
+</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
