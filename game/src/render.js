@@ -1,34 +1,8 @@
-// PAPER STORM — everything the eye sees, drawn on one canvas.
-// Procedural art only: no images, no fonts from the network. The palette
-// is cream paper and navy ink with vermilion stamps and gold, and every
-// element is drawn big and high-contrast so the frame still reads when the
-// judge shrinks it to a few hundred pixels wide.
+// PAPER STORM v2 — render.js: everything the eye sees. One job: draw the world.
+// Layout is the #1 lesson: a frame must read at a glance — dense HUD, named
+// upgrades, popups, banner — while the field stays a coherent paper/ink scene.
 
-import { FIELD, PALETTE, TUNING, mulberry32 } from './config.js';
-import { UPGRADES } from './world.js';
-
-// Fibre speckles for the paper, fixed once from a constant seed so every
-// run shows the same sheet.
-const SPECKLES = (() => {
-  const rng = mulberry32(20261118);
-  const dots = [];
-  for (let i = 0; i < 260; i += 1) {
-    dots.push({ x: rng() * FIELD.width, y: rng() * FIELD.height, r: 0.6 + rng() * 1.4, a: 0.04 + rng() * 0.07 });
-  }
-  return dots;
-})();
-
-// Cloud streaks for parallax: slow pale bands drifting across the sky.
-const CLOUDS = (() => {
-  const rng = mulberry32(777);
-  const bands = [];
-  for (let i = 0; i < 7; i += 1) {
-    bands.push({ x: rng() * FIELD.width, y: 40 + rng() * (FIELD.height - 80), w: 180 + rng() * 260, h: 16 + rng() * 22, v: 8 + rng() * 14 });
-  }
-  return bands;
-})();
-
-function roundRect(ctx, x, y, w, h, r) {
+function rr(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
   ctx.arcTo(x + w, y, x + w, y + h, r);
@@ -38,474 +12,369 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-function drawPaper(ctx, time) {
-  ctx.fillStyle = PALETTE.paper;
-  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-  for (const d of SPECKLES) {
-    ctx.fillStyle = `rgba(120, 100, 70, ${d.a})`;
-    ctx.beginPath();
-    ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  // Torn-paper vignette: a rough darker edge all round.
-  ctx.strokeStyle = 'rgba(90, 70, 45, 0.28)';
-  ctx.lineWidth = 10;
-  ctx.beginPath();
-  for (let x = 0; x <= FIELD.width; x += 46) {
-    const y = 6 + Math.sin(x * 0.021) * 5;
-    if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  for (let y = 0; y <= FIELD.height; y += 46) {
-    const x = FIELD.width - 6 - Math.sin(y * 0.019) * 5;
-    ctx.lineTo(x, y);
-  }
-  for (let x = FIELD.width; x >= 0; x -= 46) {
-    const y = FIELD.height - 6 - Math.sin(x * 0.023) * 5;
-    ctx.lineTo(x, y);
-  }
-  for (let y = FIELD.height; y >= 0; y -= 46) {
-    const x = 6 + Math.sin(y * 0.017) * 5;
-    ctx.lineTo(x, y);
-  }
-  ctx.closePath();
-  ctx.stroke();
-  // Drifting cloud streaks, slow and pale.
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
-  for (const c of CLOUDS) {
-    const x = ((c.x + time * c.v) % (FIELD.width + 400)) - 200;
-    ctx.beginPath();
-    ctx.ellipse(x, c.y, c.w / 2, c.h / 2, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
+function text(ctx, str, x, y, size, color, align, weight) {
+  ctx.fillStyle = color;
+  ctx.font = (weight || 'bold') + ' ' + size + 'px Arial, Helvetica, sans-serif';
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(str, x, y);
 }
 
-// One ink blot: a wobbling navy mass with a glossy rim.
-function drawBlot(ctx, b, time) {
-  ctx.save();
-  ctx.translate(b.x, b.y);
-  ctx.beginPath();
-  const n = 12;
-  for (let i = 0; i <= n; i += 1) {
-    const a = (i / n) * Math.PI * 2;
-    const wob = 1 + 0.16 * Math.sin(a * 3 + b.phase + time * 2.4);
-    const r = b.r * wob;
-    const x = Math.cos(a) * r;
-    const y = Math.sin(a) * r;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.closePath();
-  ctx.fillStyle = PALETTE.ink;
-  ctx.fill();
-  ctx.strokeStyle = PALETTE.inkSoft;
-  ctx.lineWidth = 3;
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(-b.r * 0.3, -b.r * 0.35, b.r * 0.28, Math.PI * 0.9, Math.PI * 1.7);
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
-  ctx.lineWidth = 4;
-  ctx.stroke();
-  ctx.fillStyle = PALETTE.cream;
-  ctx.beginPath();
-  ctx.arc(-b.r * 0.18, b.r * 0.1, 2.5, 0, Math.PI * 2);
-  ctx.arc(b.r * 0.22, b.r * 0.05, 2.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-}
-
-// One stamped letter: a bright envelope with a vermilion stamp.
-function drawLetter(ctx, l, time) {
-  const bob = Math.sin(time * 2.2 + l.phase) * 3;
-  ctx.save();
-  ctx.translate(l.x, l.y + bob);
-  ctx.rotate(l.rot + Math.sin(time * 1.4 + l.phase) * 0.08);
-  ctx.fillStyle = 'rgba(30, 42, 74, 0.18)';
-  ctx.beginPath();
-  ctx.ellipse(2, 16, 26, 7, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = PALETTE.cream;
-  ctx.strokeStyle = PALETTE.gold;
-  ctx.lineWidth = 2.5;
-  roundRect(ctx, -24, -15, 48, 30, 4);
-  ctx.fill();
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(-24, -15);
-  ctx.lineTo(0, 2);
-  ctx.lineTo(24, -15);
-  ctx.strokeStyle = PALETTE.inkPale;
+function panel(ctx, x, y, w, h, fill, stroke) {
+  ctx.fillStyle = fill || 'rgba(251,246,234,0.94)';
+  ctx.strokeStyle = stroke || PALETTE.ink;
   ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.fillStyle = PALETTE.vermilion;
-  ctx.fillRect(11, -12, 11, 13);
-  ctx.fillStyle = PALETTE.cream;
-  ctx.font = 'bold 9px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('1', 16.5, -5);
-  ctx.restore();
+  rr(ctx, x, y, w, h, 10);
+  ctx.fill(); ctx.stroke();
 }
 
-// The Tempest vortex: a turning ink spiral with a health ring.
-function drawVortex(ctx, v, time) {
+function drawUpgradeIcon(ctx, id, x, y, s, color) {
   ctx.save();
-  ctx.translate(v.x, v.y);
-  const pulse = 1 + 0.06 * Math.sin(time * 3);
-  for (let ring = 3; ring >= 1; ring -= 1) {
-    ctx.beginPath();
-    const r = v.r * pulse * (ring / 3);
-    for (let a = 0; a <= Math.PI * 2 + 0.01; a += 0.12) {
-      const rr = r * (1 - 0.12 * Math.sin(a * 2 - time * 2.2 + ring));
-      const x = Math.cos(a) * rr;
-      const y = Math.sin(a) * rr;
-      if (a === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-    ctx.closePath();
-    ctx.fillStyle = ring === 1 ? PALETTE.ink : `rgba(30, 42, 74, ${0.55 - ring * 0.12})`;
-    ctx.fill();
-  }
-  ctx.beginPath();
-  ctx.arc(0, 0, 16 + Math.sin(time * 4) * 3, 0, Math.PI * 2);
-  ctx.fillStyle = PALETTE.vermilion;
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(0, 0, 8, 0, Math.PI * 2);
-  ctx.fillStyle = PALETTE.gold;
-  ctx.fill();
-  // Health ring.
-  ctx.beginPath();
-  ctx.arc(0, 0, v.r + 12, -Math.PI / 2, -Math.PI / 2 + (v.hp / v.maxHp) * Math.PI * 2);
-  ctx.strokeStyle = PALETTE.vermilion;
-  ctx.lineWidth = 8;
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(0, 0, v.r + 12, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(30, 42, 74, 0.25)';
-  ctx.lineWidth = 8;
-  ctx.stroke();
-  ctx.restore();
-}
-
-// The paper plane: a folded dart, banking with its velocity, gold-edged.
-function drawPlane(ctx, p, time, shielded, dashing) {
-  ctx.save();
-  ctx.translate(p.x, p.y);
-  ctx.rotate(p.angle);
-  ctx.scale(1.45, 1.45); // the plane is the hero: draw it big enough to read shrunk
-  if (dashing) {
-    ctx.strokeStyle = 'rgba(217, 164, 65, 0.7)';
-    ctx.lineWidth = 4;
-    for (let i = 1; i <= 3; i += 1) {
-      ctx.beginPath();
-      ctx.moveTo(-18 - i * 12, -6 + i * 4);
-      ctx.lineTo(-34 - i * 12, -6 + i * 4);
-      ctx.stroke();
-    }
-  }
-  ctx.fillStyle = 'rgba(30, 42, 74, 0.16)';
-  ctx.beginPath();
-  ctx.ellipse(0, 12, 20, 5, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(24, 0);
-  ctx.lineTo(-16, -13);
-  ctx.lineTo(-8, 0);
-  ctx.lineTo(-16, 13);
-  ctx.closePath();
-  ctx.fillStyle = PALETTE.white;
-  ctx.fill();
-  ctx.strokeStyle = PALETTE.gold;
+  ctx.translate(x, y);
+  ctx.strokeStyle = color || PALETTE.ink;
+  ctx.fillStyle = color || PALETTE.ink;
   ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(24, 0);
-  ctx.lineTo(-8, 0);
-  ctx.strokeStyle = PALETTE.inkSoft;
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-  if (shielded) {
+  if (id === 'wax') {           // shield
     ctx.beginPath();
-    ctx.arc(0, 0, 26 + Math.sin(time * 6) * 2, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(217, 164, 65, 0.85)';
-    ctx.lineWidth = 3;
+    ctx.moveTo(0, -s); ctx.lineTo(s * 0.8, -s * 0.4); ctx.lineTo(s * 0.8, s * 0.3);
+    ctx.quadraticCurveTo(s * 0.8, s * 0.9, 0, s); ctx.quadraticCurveTo(-s * 0.8, s * 0.9, -s * 0.8, s * 0.3);
+    ctx.lineTo(-s * 0.8, -s * 0.4); ctx.closePath(); ctx.stroke();
+  } else if (id === 'fold') {   // lightning fold
+    ctx.beginPath();
+    ctx.moveTo(s * 0.3, -s); ctx.lineTo(-s * 0.5, s * 0.1); ctx.lineTo(-s * 0.05, s * 0.1);
+    ctx.lineTo(-s * 0.3, s); ctx.lineTo(s * 0.5, -s * 0.1); ctx.lineTo(s * 0.05, -s * 0.1);
+    ctx.closePath(); ctx.fill();
+  } else {                      // tailwind swirl
+    ctx.beginPath();
+    ctx.arc(0, 0, s * 0.7, 0.3, 4.4);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, s * 0.35, 2.2, 5.6);
     ctx.stroke();
   }
   ctx.restore();
 }
 
-function drawParts(ctx, parts) {
-  for (const pt of parts) {
-    const a = Math.max(0, pt.life / pt.maxLife);
+function drawScene(ctx, S) {
+  ctx.save();
+  if (S.shake > 0) {
+    ctx.translate(Math.sin(S.time * 127.3) * S.shake, Math.cos(S.time * 141.7) * S.shake);
+  }
+  drawPaper(ctx, S);
+  drawNotes(ctx, S);
+  drawBlots(ctx, S);
+  if (S.front === 4 && (S.state === 'play' || S.state === 'break' || S.state === 'over' || S.state === 'win')) drawVortex(ctx, S);
+  if (S.state === 'play' || S.state === 'break' || S.state === 'pause') drawPlane(ctx, S);
+  drawParticles(ctx, S);
+  drawPopups(ctx, S);
+  drawBanner(ctx, S);
+  if (S.state === 'play' || S.state === 'break' || S.state === 'pause') drawHud(ctx, S);
+  ctx.restore();
+  if (S.state === 'title') drawTitle(ctx, S);
+  else if (S.state === 'break') drawBreak(ctx, S);
+  else if (S.state === 'over') drawEnd(ctx, S, false);
+  else if (S.state === 'win') drawEnd(ctx, S, true);
+  else if (S.state === 'pause') drawPause(ctx, S);
+  if (S.flash > 0) {
+    ctx.fillStyle = 'rgba(251,246,234,' + (S.flash * 0.5).toFixed(3) + ')';
+    ctx.fillRect(0, 0, CFG.W, CFG.H);
+  }
+}
+
+function drawPaper(ctx, S) {
+  ctx.fillStyle = PALETTE.paper;
+  ctx.fillRect(-20, -20, CFG.W + 40, CFG.H + 40);
+  for (const sp of S.speckles) {
+    ctx.fillStyle = 'rgba(30,42,74,' + sp.a.toFixed(3) + ')';
+    ctx.beginPath(); ctx.arc(sp.x, sp.y, sp.r, 0, 6.283); ctx.fill();
+  }
+  for (const c of S.clouds) {
+    ctx.fillStyle = 'rgba(255,255,255,' + c.a.toFixed(3) + ')';
+    ctx.beginPath(); ctx.ellipse(c.x, c.y, c.w / 2, 16, 0, 0, 6.283); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(c.x + c.w * 0.2, c.y - 8, c.w / 3, 12, 0, 0, 6.283); ctx.fill();
+  }
+  // Torn-paper vignette: wavy dark border.
+  ctx.strokeStyle = 'rgba(30,42,74,0.28)';
+  ctx.lineWidth = 10;
+  ctx.beginPath();
+  ctx.moveTo(0, 14);
+  for (const v of S.vignette) ctx.lineTo(v.x, v.y);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, CFG.H - 14);
+  for (const v of S.vignette) ctx.lineTo(v.x, CFG.H - v.y);
+  ctx.stroke();
+}
+
+function drawNotes(ctx, S) {
+  for (const n of S.notes) {
     ctx.save();
-    ctx.translate(pt.x, pt.y);
-    ctx.rotate(pt.rot);
+    ctx.translate(n.x, n.y);
+    ctx.rotate(n.rot * 0.2);
+    ctx.shadowColor = PALETTE.gold; ctx.shadowBlur = 10;
+    ctx.fillStyle = PALETTE.cream;
+    ctx.strokeStyle = PALETTE.goldDeep; ctx.lineWidth = 2;
+    rr(ctx, -18, -13, 36, 26, 3); ctx.fill(); ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = PALETTE.inkSoft; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(-18, -13); ctx.lineTo(0, 2); ctx.lineTo(18, -13);
+    ctx.moveTo(-18, 13); ctx.lineTo(-2, 0); ctx.moveTo(18, 13); ctx.lineTo(2, 0);
+    ctx.stroke();
+    ctx.fillStyle = PALETTE.vermilion;
+    ctx.fillRect(8, -11, 8, 9);
+    ctx.fillStyle = PALETTE.cream;
+    ctx.font = 'bold 7px Arial, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('1', 12, -3.5);
+    ctx.restore();
+  }
+}
+
+function drawBlots(ctx, S) {
+  for (const b of S.blots) {
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    if (b.elite) { ctx.shadowColor = PALETTE.gold; ctx.shadowBlur = 16; }
+    ctx.fillStyle = PALETTE.ink;
+    ctx.beginPath();
+    for (let i = 0; i < 9; i++) {
+      const a = (i / 9) * Math.PI * 2 + Math.sin(S.time * b.wob + b.seed) * 0.08;
+      const r = b.r * b.pts[i];
+      const px = Math.cos(a) * r, py = Math.sin(a) * r;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.shadowBlur = 0;
+    if (b.elite) {
+      ctx.strokeStyle = PALETTE.gold; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(0, 0, b.r + 5, 0, 6.283); ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(-b.r * 0.25, -b.r * 0.3, b.r * 0.3, 3.6, 5.4); ctx.stroke();
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath(); ctx.arc(-b.r * 0.22, -b.r * 0.05, 2.6, 0, 6.283); ctx.fill();
+    ctx.beginPath(); ctx.arc(b.r * 0.22, -b.r * 0.05, 2.6, 0, 6.283); ctx.fill();
+    ctx.fillStyle = PALETTE.ink;
+    ctx.beginPath(); ctx.arc(-b.r * 0.22 + 1, -b.r * 0.05, 1.2, 0, 6.283); ctx.fill();
+    ctx.beginPath(); ctx.arc(b.r * 0.22 + 1, -b.r * 0.05, 1.2, 0, 6.283); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawVortex(ctx, S) {
+  const x = CFG.VORTEX_X, y = CFG.VORTEX_Y;
+  ctx.save();
+  ctx.shadowColor = PALETTE.ink; ctx.shadowBlur = 30;
+  ctx.fillStyle = PALETTE.ink;
+  ctx.beginPath(); ctx.arc(x, y, CFG.VORTEX_R, 0, 6.283); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = PALETTE.gold; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(x, y, CFG.VORTEX_R - 6, S.time * 1.4, S.time * 1.4 + 4.4); ctx.stroke();
+  ctx.strokeStyle = 'rgba(217,164,65,0.55)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x, y, CFG.VORTEX_R - 22, -S.time * 1.1, -S.time * 1.1 + 3.6); ctx.stroke();
+  ctx.fillStyle = PALETTE.cream;
+  ctx.beginPath(); ctx.arc(x, y, 26 + Math.sin(S.time * 3) * 5, 0, 6.283); ctx.fill();
+  ctx.fillStyle = PALETTE.ink;
+  ctx.beginPath(); ctx.arc(x, y, 12, 0, 6.283); ctx.fill();
+  // HP ring
+  ctx.strokeStyle = PALETTE.vermilion; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.arc(x, y, CFG.VORTEX_R + 12, -Math.PI / 2, -Math.PI / 2 + (S.tempest.hp / 100) * Math.PI * 2); ctx.stroke();
+  text(ctx, 'THE TEMPEST', x, y - CFG.VORTEX_R - 30, 20, PALETTE.vermilion, 'center');
+  text(ctx, 'SHATTER ' + S.tempest.charge + '/' + CFG.SHATTER_LETTERS, x, y + CFG.VORTEX_R + 34, 15, PALETTE.goldDeep, 'center');
+  ctx.restore();
+}
+
+function drawPlane(ctx, S) {
+  const p = S.plane;
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(p.angle + Math.PI / 2);
+  ctx.shadowColor = PALETTE.gold; ctx.shadowBlur = 18;
+  ctx.fillStyle = PALETTE.cream;
+  ctx.strokeStyle = PALETTE.goldDeep; ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, -22); ctx.lineTo(15, 14); ctx.lineTo(0, 7); ctx.lineTo(-15, 14);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = PALETTE.inkSoft; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(0, -22); ctx.lineTo(0, 7); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, -8); ctx.lineTo(11, 10); ctx.moveTo(0, -8); ctx.lineTo(-11, 10); ctx.stroke();
+  ctx.restore();
+  if (S.shield > 0) {
+    ctx.save();
+    ctx.globalAlpha = 0.4 + 0.3 * Math.sin(S.time * 18);
+    ctx.strokeStyle = PALETTE.gold; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 30, 0, 6.283); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawParticles(ctx, S) {
+  for (const pt of S.particles) {
+    const a = clamp(pt.life / pt.max, 0, 1);
+    ctx.save();
     ctx.globalAlpha = a;
-    if (pt.kind === 'paper') {
-      ctx.fillStyle = PALETTE.white;
+    ctx.fillStyle = pt.color;
+    if (pt.kind === 'scrap') {
+      ctx.translate(pt.x, pt.y); ctx.rotate(pt.rot || 0);
       ctx.fillRect(-pt.size / 2, -pt.size / 4, pt.size, pt.size / 2);
-    } else if (pt.kind === 'ink') {
-      ctx.fillStyle = PALETTE.ink;
-      ctx.beginPath();
-      ctx.arc(0, 0, pt.size / 2, 0, Math.PI * 2);
-      ctx.fill();
     } else {
-      ctx.fillStyle = PALETTE.gold;
-      ctx.beginPath();
-      ctx.moveTo(0, -pt.size / 2);
-      ctx.lineTo(pt.size / 4, 0);
-      ctx.lineTo(0, pt.size / 2);
-      ctx.lineTo(-pt.size / 4, 0);
-      ctx.closePath();
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, pt.size, 0, 6.283); ctx.fill();
     }
     ctx.restore();
   }
-  ctx.globalAlpha = 1;
 }
 
-function drawPops(ctx, pops) {
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  for (const pop of pops) {
-    const a = Math.max(0, pop.life / 1.1);
+function drawPopups(ctx, S) {
+  for (const pp of S.popups) {
+    const a = clamp(pp.life / pp.max, 0, 1);
+    ctx.save();
     ctx.globalAlpha = a;
-    ctx.font = 'bold 20px system-ui, sans-serif';
-    ctx.fillStyle = pop.kind === 'gold' ? PALETTE.gold : PALETTE.vermilion;
-    ctx.fillText(pop.text, pop.x, pop.y);
+    text(ctx, pp.text, pp.x, pp.y, pp.size, pp.color, 'center');
+    ctx.restore();
   }
-  ctx.globalAlpha = 1;
 }
 
-function drawHeart(ctx, x, y, filled) {
+function drawBanner(ctx, S) {
+  if (!S.banner) return;
+  const k = 1 - S.banner.t / S.banner.max;
+  const scale = 1 + 0.25 * Math.sin(Math.min(1, k * 3) * Math.PI);
   ctx.save();
-  ctx.translate(x, y);
-  ctx.beginPath();
-  ctx.moveTo(0, 6);
-  ctx.bezierCurveTo(-11, -4, -6, -12, 0, -5);
-  ctx.bezierCurveTo(6, -12, 11, -4, 0, 6);
-  ctx.closePath();
-  ctx.fillStyle = filled ? PALETTE.vermilion : 'rgba(30, 42, 74, 0.18)';
-  ctx.fill();
-  ctx.strokeStyle = PALETTE.ink;
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
+  ctx.translate(CFG.W / 2, 530);
+  ctx.scale(scale, scale);
+  ctx.globalAlpha = clamp(S.banner.t / 0.5, 0, 1);
+  ctx.shadowColor = PALETTE.gold; ctx.shadowBlur = 24;
+  text(ctx, S.banner.text, 0, 0, 44, PALETTE.goldDeep, 'center');
   ctx.restore();
 }
 
-// The HUD: score left, front centre, hull / dash / combo right.
-function drawHUD(ctx, world) {
-  ctx.save();
-  ctx.fillStyle = 'rgba(251, 246, 234, 0.88)';
-  roundRect(ctx, 12, 10, FIELD.width - 24, 56, 10);
-  ctx.fill();
-  ctx.strokeStyle = PALETTE.inkSoft;
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'left';
-  ctx.fillStyle = PALETTE.ink;
-  ctx.font = 'bold 26px system-ui, sans-serif';
-  ctx.fillText(`SCORE ${world.score}`, 28, 30);
-  ctx.font = 'bold 15px system-ui, sans-serif';
-  ctx.fillStyle = PALETTE.inkPale;
-  ctx.fillText(`BEST ${Math.max(world.best, world.score)}`, 28, 53);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = PALETTE.ink;
-  ctx.font = 'bold 22px system-ui, sans-serif';
-  const frontLabel = world.front === 4 ? 'TEMPEST' : `FRONT ${world.front} / 3`;
-  ctx.fillText(frontLabel, FIELD.width / 2, 28);
-  if (world.front === 4 && world.vortex) {
-    ctx.fillStyle = 'rgba(30, 42, 74, 0.2)';
-    roundRect(ctx, FIELD.width / 2 - 130, 44, 260, 10, 5);
-    ctx.fill();
-    ctx.fillStyle = PALETTE.vermilion;
-    roundRect(ctx, FIELD.width / 2 - 130, 44, 260 * (world.vortex.hp / world.vortex.maxHp), 10, 5);
-    ctx.fill();
+function drawHud(ctx, S) {
+  // Top bar: score / front + WIN-LOSE / stamps + combo.
+  panel(ctx, 8, 8, 1264, 76, 'rgba(251,246,234,0.95)');
+  text(ctx, 'SCORE ' + S.score.toLocaleString('en-US'), 24, 40, 30, PALETTE.ink, 'left');
+  text(ctx, 'BEST ' + Math.max(S.best, S.score).toLocaleString('en-US'), 24, 64, 13, PALETTE.slate, 'left');
+  const frontLabel = S.front === 4 ? 'TEMPEST — FINAL FRONT' : 'FRONT ' + S.front + ' / 3';
+  text(ctx, frontLabel, 640, 32, 21, PALETTE.ink, 'center');
+  ctx.fillStyle = PALETTE.paperDark;
+  rr(ctx, 510, 42, 260, 10, 5); ctx.fill();
+  ctx.fillStyle = PALETTE.gold;
+  const frac = S.front === 4 ? (100 - S.tempest.hp) / 100 : S.frontTime / CFG.FRONT_DUR;
+  rr(ctx, 510, 42, Math.max(10, 260 * clamp(frac, 0, 1)), 10, 5); ctx.fill();
+  text(ctx, 'WIN: clear 3 fronts + break the TEMPEST', 640, 66, 11, PALETTE.inkSoft, 'center', 'normal');
+  text(ctx, 'LOSE: hull hits 0', 640, 80, 11, PALETTE.vermilion, 'center', 'normal');
+  text(ctx, 'STAMPS ' + S.letters, 1256, 32, 16, PALETTE.ink, 'right');
+  text(ctx, 'COMBO x' + comboOf(S).toFixed(2), 1256, 58, 24, PALETTE.goldDeep, 'right');
+  // Right panel: picked upgrades, incoming, Tempest status.
+  const px = 1052, pw = 220;
+  panel(ctx, px, 92, pw, 264, 'rgba(251,246,234,0.94)');
+  text(ctx, 'RUN UPGRADES ' + S.picks + '/3', px + 12, 118, 14, PALETTE.ink, 'left');
+  ctx.fillStyle = PALETTE.gold;
+  ctx.fillRect(px + 12, 124, pw - 24, 2);
+  let uy = 148;
+  const picked = UPGRADES.filter((u) => S.upgradesPicked[u.id] > 0);
+  if (picked.length === 0) {
+    text(ctx, '— none yet —', px + 12, uy, 14, PALETTE.slate, 'left', 'normal');
+    uy += 24;
   } else {
-    ctx.fillStyle = 'rgba(30, 42, 74, 0.2)';
-    roundRect(ctx, FIELD.width / 2 - 130, 44, 260, 10, 5);
-    ctx.fill();
-    ctx.fillStyle = PALETTE.gold;
-    roundRect(ctx, FIELD.width / 2 - 130, 44, 260 * Math.min(1, world.frontTime / TUNING.frontDuration), 10, 5);
-    ctx.fill();
+    for (const u of picked) {
+      drawUpgradeIcon(ctx, u.id, px + 22, uy - 5, 9, PALETTE.goldDeep);
+      text(ctx, u.name + (S.upgradesPicked[u.id] > 1 ? ' x' + S.upgradesPicked[u.id] : ''), px + 38, uy, 14, PALETTE.ink, 'left');
+      uy += 24;
+    }
   }
-  ctx.textAlign = 'right';
-  for (let i = 0; i < world.maxHull; i += 1) {
-    drawHeart(ctx, FIELD.width - 320 + i * 26, 30, i < world.hull);
+  uy += 6;
+  ctx.fillStyle = PALETTE.gold;
+  ctx.fillRect(px + 12, uy, pw - 24, 2);
+  uy += 24;
+  text(ctx, 'INCOMING', px + 12, uy, 14, PALETTE.ink, 'left');
+  uy += 22;
+  text(ctx, 'ink blot x' + S.blots.length, px + 12, uy, 14, PALETTE.inkSoft, 'left', 'normal');
+  uy += 20;
+  text(ctx, 'letter x' + S.notes.length, px + 12, uy, 14, PALETTE.inkSoft, 'left', 'normal');
+  if (S.front === 4) {
+    uy += 26;
+    text(ctx, 'TEMPEST ' + Math.round(S.tempest.hp) + '%', px + 12, uy, 15, PALETTE.vermilion, 'left');
+    ctx.fillStyle = PALETTE.paperDark;
+    rr(ctx, px + 12, uy + 8, pw - 24, 9, 4); ctx.fill();
+    ctx.fillStyle = PALETTE.vermilion;
+    rr(ctx, px + 12, uy + 8, Math.max(6, (pw - 24) * S.tempest.hp / 100), 9, 4); ctx.fill();
   }
-  ctx.font = 'bold 20px system-ui, sans-serif';
-  ctx.fillStyle = world.combo > 1 ? PALETTE.vermilion : PALETTE.ink;
-  ctx.fillText(`COMBO x${world.combo}`, FIELD.width - 28, 26);
-  ctx.font = 'bold 14px system-ui, sans-serif';
-  ctx.fillStyle = PALETTE.inkPale;
-  ctx.fillText(`LETTERS ${world.lettersGot}`, FIELD.width - 28, 48);
-  // Dash cooldown bar, bottom-left.
-  const dashMax = world.upgrades.fold ? TUNING.dashCooldownFast : TUNING.dashCooldown;
-  const dashReady = Math.max(0, 1 - world.dashCd / dashMax);
-  ctx.textAlign = 'left';
-  ctx.fillStyle = 'rgba(251, 246, 234, 0.88)';
-  roundRect(ctx, 12, FIELD.height - 40, 300, 26, 8);
-  ctx.fill();
-  ctx.strokeStyle = PALETTE.inkSoft;
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-  ctx.fillStyle = dashReady >= 1 ? PALETTE.gold : PALETTE.inkPale;
-  roundRect(ctx, 16, FIELD.height - 33, 130 * dashReady, 12, 6);
-  ctx.fill();
-  ctx.fillStyle = PALETTE.ink;
-  ctx.font = 'bold 13px system-ui, sans-serif';
-  ctx.fillText(dashReady >= 1 ? 'DASH READY [SPACE]' : 'DASH...', 154, FIELD.height - 26);
-  ctx.restore();
+  // Bottom-left: hull hearts + dash.
+  panel(ctx, 8, 636, 300, 44, 'rgba(251,246,234,0.94)');
+  for (let i = 0; i < S.maxHull; i++) {
+    text(ctx, '♥', 26 + i * 26, 668, 22, i < S.hull ? PALETTE.vermilion : PALETTE.paperDeep, 'left');
+  }
+  const dcMax = dashCooldown(S);
+  const dcFrac = 1 - S.dashCd / dcMax;
+  ctx.fillStyle = PALETTE.paperDark;
+  rr(ctx, 158, 652, 132, 10, 5); ctx.fill();
+  ctx.fillStyle = PALETTE.gold;
+  rr(ctx, 158, 652, Math.max(8, 132 * clamp(dcFrac, 0, 1)), 10, 5); ctx.fill();
+  text(ctx, S.dashCd <= 0 ? 'DASH READY [SPACE]' : 'DASH …', 158, 644, 11, PALETTE.inkSoft, 'left');
+  // Bottom hint strip.
+  text(ctx, 'MOUSE / WASD — STEER   ·   SPACE — FOLD-DASH   ·   P — PAUSE   ·   M — SOUND   ·   R — RESTART', 640, 706, 13, PALETTE.inkSoft, 'center', 'normal');
 }
 
-function panel(ctx, x, y, w, h) {
-  ctx.fillStyle = 'rgba(251, 246, 234, 0.94)';
-  roundRect(ctx, x, y, w, h, 14);
-  ctx.fill();
-  ctx.strokeStyle = PALETTE.ink;
-  ctx.lineWidth = 3;
-  ctx.stroke();
+function dim(ctx) {
+  ctx.fillStyle = 'rgba(30,42,74,0.45)';
+  ctx.fillRect(0, 0, CFG.W, CFG.H);
 }
 
-function drawTitle(ctx, world) {
-  ctx.fillStyle = 'rgba(30, 42, 74, 0.35)';
-  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-  panel(ctx, 290, 130, 700, 440);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = PALETTE.ink;
-  ctx.font = 'bold 74px system-ui, sans-serif';
-  ctx.fillText('PAPER STORM', FIELD.width / 2, 210);
+function drawTitle(ctx, S) {
+  dim(ctx);
+  panel(ctx, 240, 96, 800, 528);
+  text(ctx, 'PAPER STORM', 640, 200, 68, PALETTE.ink, 'center');
   ctx.fillStyle = PALETTE.vermilion;
-  ctx.fillRect(FIELD.width / 2 - 180, 258, 360, 5);
-  ctx.fillStyle = PALETTE.inkSoft;
-  ctx.font = 'bold 21px system-ui, sans-serif';
-  ctx.fillText('Pilot a paper plane through an ink storm.', FIELD.width / 2, 300);
-  ctx.fillText('Dodge the blots. Stamp the letters. Break the Tempest.', FIELD.width / 2, 330);
-  ctx.font = '19px system-ui, sans-serif';
-  ctx.fillStyle = PALETTE.dark;
-  ctx.fillText('MOUSE or WASD / ARROWS — steer      SPACE — fold-dash', FIELD.width / 2, 388);
-  ctx.fillText('P — pause      M — mute      R — restart', FIELD.width / 2, 418);
-  ctx.fillStyle = PALETTE.vermilion;
-  ctx.font = 'bold 26px system-ui, sans-serif';
-  ctx.fillText('CLICK OR PRESS ENTER TO START', FIELD.width / 2, 480);
-  ctx.fillStyle = PALETTE.inkPale;
-  ctx.font = 'bold 17px system-ui, sans-serif';
-  ctx.fillText(`BEST ${Math.max(world.best, world.score)}`, FIELD.width / 2, 525);
+  ctx.fillRect(520, 218, 240, 4);
+  text(ctx, 'Pilot a paper plane through an ink storm.', 640, 268, 22, PALETTE.inkSoft, 'center', 'normal');
+  text(ctx, 'Dodge the blots. Stamp the letters. Break the Tempest.', 640, 298, 22, PALETTE.inkSoft, 'center', 'normal');
+  text(ctx, '3 FRONTS + THE TEMPEST', 640, 338, 20, PALETTE.goldDeep, 'center');
+  text(ctx, 'UPGRADES:  WAX COAT  ·  SHARP FOLD  ·  TAILWIND', 640, 372, 16, PALETTE.ink, 'center');
+  text(ctx, 'MOUSE or WASD / ARROWS — steer      SPACE — fold-dash', 640, 420, 17, PALETTE.ink, 'center', 'normal');
+  text(ctx, 'P — pause      M — mute      R — restart', 640, 450, 17, PALETTE.ink, 'center', 'normal');
+  text(ctx, 'CLICK OR PRESS ENTER TO START', 640, 516, 24, PALETTE.vermilion, 'center');
+  text(ctx, 'BEST ' + S.best.toLocaleString('en-US'), 640, 556, 16, PALETTE.slate, 'center');
 }
 
-function drawBreak(ctx, world) {
-  ctx.fillStyle = 'rgba(30, 42, 74, 0.45)';
-  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-  panel(ctx, 190, 110, 900, 480);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = PALETTE.ink;
-  ctx.font = 'bold 44px system-ui, sans-serif';
-  ctx.fillText(`FRONT ${world.front} CLEARED!`, FIELD.width / 2, 170);
-  ctx.fillStyle = PALETTE.inkSoft;
-  ctx.font = 'bold 21px system-ui, sans-serif';
-  ctx.fillText('The storm lets up. Choose one upgrade — click it or press 1, 2 or 3.', FIELD.width / 2, 215);
-  const w = 260;
-  const gap = 20;
-  const x0 = FIELD.width / 2 - (w * 3 + gap * 2) / 2;
+function drawBreak(ctx, S) {
+  dim(ctx);
+  panel(ctx, 190, 110, 900, 500);
+  text(ctx, 'FRONT ' + S.front + ' CLEARED!', 640, 176, 40, PALETTE.ink, 'center');
+  text(ctx, 'CHOOSE AN UPGRADE — 1, 2 or 3, or click a card', 640, 214, 18, PALETTE.inkSoft, 'center', 'normal');
+  const cw = 250, gap = 25, x0 = 640 - (cw * 3 + gap * 2) / 2;
   UPGRADES.forEach((u, i) => {
-    const x = x0 + i * (w + gap);
-    const owned = (u.id === 'coat' && world.maxHull >= TUNING.hullMax)
-      || (u.id === 'fold' && world.upgrades.fold)
-      || (u.id === 'tailwind' && world.upgrades.tailwind);
-    ctx.fillStyle = owned ? 'rgba(30, 42, 74, 0.12)' : PALETTE.cream;
-    roundRect(ctx, x, 260, w, 220, 12);
-    ctx.fill();
-    ctx.strokeStyle = PALETTE.gold;
-    ctx.lineWidth = 3;
-    ctx.stroke();
-    ctx.fillStyle = PALETTE.gold;
-    ctx.beginPath();
-    ctx.arc(x + w / 2, 310, 26, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = PALETTE.ink;
-    ctx.font = 'bold 26px system-ui, sans-serif';
-    ctx.fillText(u.key, x + w / 2, 311);
-    ctx.fillStyle = PALETTE.ink;
-    ctx.font = 'bold 23px system-ui, sans-serif';
-    ctx.fillText(u.name, x + w / 2, 370);
-    ctx.fillStyle = PALETTE.inkSoft;
-    ctx.font = '17px system-ui, sans-serif';
-    const words = u.desc.split(' ');
-    let line = '';
-    let ly = 405;
-    for (const word of words) {
-      if ((line + ' ' + word).trim().length > 22) {
-        ctx.fillText(line.trim(), x + w / 2, ly);
-        line = word;
-        ly += 22;
-      } else {
-        line += ' ' + word;
-      }
-    }
-    ctx.fillText(line.trim(), x + w / 2, ly);
-    if (owned) {
-      ctx.fillStyle = PALETTE.vermilion;
-      ctx.font = 'bold 16px system-ui, sans-serif';
-      ctx.fillText('OWNED — PICK FOR +500', x + w / 2, 452);
-    }
+    const x = x0 + i * (cw + gap), y = 250;
+    panel(ctx, x, y, cw, 250, PALETTE.cream, PALETTE.goldDeep);
+    text(ctx, '[' + (i + 1) + ']', x + cw / 2, y + 36, 16, PALETTE.slate, 'center', 'normal');
+    drawUpgradeIcon(ctx, u.id, x + cw / 2, y + 92, 26, PALETTE.goldDeep);
+    text(ctx, u.name, x + cw / 2, y + 150, 21, PALETTE.ink, 'center');
+    text(ctx, u.desc, x + cw / 2, y + 186, 15, PALETTE.inkSoft, 'center', 'normal');
+    if (S.upgradesPicked[u.id] > 0) text(ctx, 'OWNED x' + S.upgradesPicked[u.id], x + cw / 2, y + 220, 14, PALETTE.vermilion, 'center');
   });
+  text(ctx, 'SCORE ' + S.score.toLocaleString('en-US') + '   ·   STAMPS ' + S.letters, 640, 556, 17, PALETTE.inkSoft, 'center');
 }
 
-function drawEnd(ctx, world, won) {
-  ctx.fillStyle = won ? 'rgba(217, 164, 65, 0.3)' : 'rgba(30, 42, 74, 0.5)';
-  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-  panel(ctx, 330, 170, 620, 360);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = won ? PALETTE.gold : PALETTE.vermilion;
-  ctx.font = 'bold 52px system-ui, sans-serif';
-  ctx.fillText(won ? 'THE STORM BREAKS!' : 'TORN APART', FIELD.width / 2, 240);
-  ctx.fillStyle = PALETTE.ink;
-  ctx.font = 'bold 30px system-ui, sans-serif';
-  ctx.fillText(`SCORE ${world.score}`, FIELD.width / 2, 310);
-  ctx.fillStyle = PALETTE.inkPale;
-  ctx.font = 'bold 20px system-ui, sans-serif';
-  ctx.fillText(`BEST ${Math.max(world.best, world.score)}   •   LETTERS ${world.lettersGot}`, FIELD.width / 2, 350);
-  ctx.fillText(won ? 'You flew through the Tempest and lived to tell it.' : 'The ink storm got your plane this time.', FIELD.width / 2, 395);
-  ctx.fillStyle = PALETTE.vermilion;
-  ctx.font = 'bold 24px system-ui, sans-serif';
-  ctx.fillText('PRESS R OR CLICK TO FLY AGAIN', FIELD.width / 2, 460);
+function pickedNames(S) {
+  const names = UPGRADES.filter((u) => S.upgradesPicked[u.id] > 0).map((u) => u.name + (S.upgradesPicked[u.id] > 1 ? ' x' + S.upgradesPicked[u.id] : ''));
+  return names.length ? names.join('  ·  ') : 'none';
 }
 
-function drawPaused(ctx) {
-  ctx.fillStyle = 'rgba(30, 42, 74, 0.5)';
-  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = PALETTE.cream;
-  ctx.font = 'bold 54px system-ui, sans-serif';
-  ctx.fillText('PAUSED', FIELD.width / 2, FIELD.height / 2 - 20);
-  ctx.font = 'bold 22px system-ui, sans-serif';
-  ctx.fillText('P TO RESUME', FIELD.width / 2, FIELD.height / 2 + 30);
+function drawEnd(ctx, S, won) {
+  dim(ctx);
+  panel(ctx, 290, 120, 700, 480);
+  text(ctx, won ? 'TEMPEST BROKEN!' : 'TORN APART', 640, 210, 54, won ? PALETTE.goldDeep : PALETTE.vermilion, 'center');
+  text(ctx, won ? 'The ink storm is stamped flat. You win.' : 'The ink storm got your plane this time.', 640, 250, 18, PALETTE.inkSoft, 'center', 'normal');
+  text(ctx, 'SCORE ' + S.score.toLocaleString('en-US'), 640, 316, 36, PALETTE.ink, 'center');
+  text(ctx, 'BEST ' + Math.max(S.best, S.score).toLocaleString('en-US') + '    ·    LETTERS ' + S.letters, 640, 352, 17, PALETTE.slate, 'center');
+  text(ctx, 'BEST COMBO x' + S.bestCombo.toFixed(2) + '    ·    FRONTS CLEARED ' + S.frontsCleared + '/3', 640, 382, 17, PALETTE.slate, 'center');
+  text(ctx, 'UPGRADES: ' + pickedNames(S), 640, 412, 16, PALETTE.ink, 'center');
+  text(ctx, 'CLOSE CALLS ' + S.closeCalls, 640, 442, 16, PALETTE.slate, 'center');
+  text(ctx, 'PRESS R OR CLICK TO FLY AGAIN', 640, 516, 24, PALETTE.vermilion, 'center');
 }
 
-// Screen names, shared by the loop and the screenshot staging.
-export const SCREEN_TITLE = 'title';
-export const SCREEN_PLAY = 'play';
-export const SCREEN_BREAK = 'break';
-export const SCREEN_OVER = 'over';
-export const SCREEN_WIN = 'win';
-
-// Draw one frame: the living scene, the HUD, and the screen on top of it.
-export function drawScene(ctx, world, screen, paused) {
-  drawPaper(ctx, world.time);
-  if (world.vortex) drawVortex(ctx, world.vortex, world.time);
-  for (const l of world.letters) drawLetter(ctx, l, world.time);
-  for (const b of world.blots) drawBlot(ctx, b, world.time);
-  drawParts(ctx, world.parts);
-  const shielded = world.shield > 0 || world.dashTime > 0;
-  if (screen !== 'over') drawPlane(ctx, world.player, world.time, shielded, world.dashTime > 0);
-  drawPops(ctx, world.pops);
-  if (screen === 'play' || screen === 'break') drawHUD(ctx, world);
-  if (screen === 'title') drawTitle(ctx, world);
-  if (screen === 'break') drawBreak(ctx, world);
-  if (screen === 'over') drawEnd(ctx, world, false);
-  if (screen === 'win') drawEnd(ctx, world, true);
-  if (paused && screen === 'play') drawPaused(ctx);
+function drawPause(ctx, S) {
+  dim(ctx);
+  panel(ctx, 440, 280, 400, 160);
+  text(ctx, 'PAUSED', 640, 348, 40, PALETTE.ink, 'center');
+  text(ctx, 'P to resume', 640, 392, 17, PALETTE.inkSoft, 'center', 'normal');
 }

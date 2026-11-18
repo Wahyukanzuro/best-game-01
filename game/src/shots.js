@@ -1,117 +1,103 @@
-// PAPER STORM — the screenshot scenes behind ?shot=start|play|end.
-// Each one plays the real rules forward from a fresh world for a fixed
-// number of steps, steered by a simple autopilot, so the frame is what a
-// short game really looks like and the same seed always gives the same frame.
+// PAPER STORM v2 — shots.js: deterministic staged scenes for the screenshots.
+// One job: run the seeded simulation forward (no rendering) until the exact frame
+// the shot needs, with an autopilot that steers through the same controls live
+// play uses. Same seed always yields the same frame.
 
-import { FIELD, STEP, TUNING } from './config.js';
-import { stepWorld, resetWorld } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+const DT = 1 / 60;
 
-const START_SECONDS = 5;
-const PLAY_FRONT = 2;
-const PLAY_FRONT_SECONDS = 15;
-const END_LIMIT_SECONDS = 600;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [
-  [0, 0], [1, 0], [-1, 0], [0, 1], [0, -1],
-  [0.707, 0.707], [0.707, -0.707], [-0.707, 0.707], [-0.707, -0.707],
-];
-
-// How dangerous is it to fly in direction (dx, dy) for `horizon` seconds?
-// The ghost plane moves at full speed; a blot it would meet costs danger
-// in proportion to how soon the meeting happens.
-function dangerAt(world, dx, dy, horizon) {
-  const p = world.player;
-  let danger = 0;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const gx = p.x + dx * TUNING.playerSpeed * t;
-    const gy = p.y + dy * TUNING.playerSpeed * t;
-    if (gx < 10 || gx > FIELD.width - 10 || gy < 10 || gy > FIELD.height - 10) {
-      danger += 2;
-    }
-    for (const b of world.blots) {
-      const bx = b.x + b.vx * t;
-      const by = b.y + b.vy * t;
-      const d = Math.hypot(bx - gx, by - gy);
-      if (d < b.r + TUNING.playerRadius + 14) danger += 3 / (t + 0.1);
-    }
+function pilotCtl(S, skill) {
+  const p = S.plane;
+  let nearestBlot = null, nd = 1e9;
+  for (const b of S.blots) {
+    const d = Math.hypot(b.x - p.x, b.y - p.y);
+    if (d < nd) { nd = d; nearestBlot = b; }
   }
-  return danger;
-}
-
-// The autopilot: among the nine ways to move, take the safest one that
-// still drifts toward the nearest letter. `horizon` is how far ahead it
-// looks; a short horizon plays like a hurried player and gets caught.
-export function autopilot(world, horizon, useDash) {
-  const p = world.player;
-  let letter = null;
-  let letterDist = Infinity;
-  for (const l of world.letters) {
-    const d = Math.hypot(l.x - p.x, l.y - p.y);
-    if (d < letterDist) {
-      letterDist = d;
-      letter = l;
-    }
+  let nearestNote = null;
+  let md = 1e9;
+  for (const n of S.notes) {
+    const d = Math.hypot(n.x - p.x, n.y - p.y);
+    if (d < md) { md = d; nearestNote = n; }
   }
-  let best = [0, 0];
-  let bestScore = -Infinity;
-  let bestDanger = Infinity;
-  for (const [dx, dy] of DIRECTIONS) {
-    const danger = dangerAt(world, dx, dy, horizon);
-    let pull = 0;
-    if (letter) {
-      const lx = letter.x - p.x;
-      const ly = letter.y - p.y;
-      const len = Math.hypot(lx, ly) || 1;
-      pull = (dx * lx + dy * ly) / len;
-    }
-    const score = pull * 1.2 - danger;
-    if (score > bestScore) {
-      bestScore = score;
-      best = [dx, dy];
-      bestDanger = danger;
-    }
-  }
-  const dash = useDash && world.dashCd <= 0 && bestDanger > 6;
-  return { kx: best[0], ky: best[1], dash };
-}
-
-// Set `world` to the named scene (start, play or end; any other name is
-// start) and return the screen to draw over it and the best score to show.
-export function stageShot(name, world) {
-  resetWorld(world, world.seed);
-  if (name !== 'play' && name !== 'end') {
-    for (let i = 0; i < START_SECONDS / STEP; i += 1) {
-      const cmd = autopilot(world, 0.7, false);
-      stepWorld(world, STEP, { ...cmd, mx: world.player.x, my: world.player.y, mouseFresh: 99 });
-      if (world.over) resetWorld(world, world.seed);
-    }
-    return { screen: SCREEN_TITLE, best: 0 };
-  }
-  if (name === 'play') {
-    const target = (PLAY_FRONT - 1) * 40 + PLAY_FRONT_SECONDS;
-    const steps = Math.floor(target / STEP);
-    for (let i = 0; i < steps; i += 1) {
-      const cmd = autopilot(world, 0.7, true);
-      const events = stepWorld(world, STEP, { ...cmd, mx: world.player.x, my: world.player.y, mouseFresh: 99 });
-      if (world.over) {
-        resetWorld(world, world.seed);
-        return stageShot('play', world);
+  const ctl = { mx: p.x, my: p.y, mouseIn: true, keys: {}, pressed: {}, clicked: false };
+  if (skill === 'strong') {
+    if (nearestBlot && nd < 160) {
+      // Escape: sample 12 directions, take the one whose landing spot is
+      // farthest from every blot (and from the vortex in the Tempest).
+      let best = -1e9, bx = p.x, by = p.y;
+      for (let k = 0; k < 12; k++) {
+        const a = (k / 12) * Math.PI * 2;
+        const tx = clamp(p.x + Math.cos(a) * 200, 70, CFG.W - 70);
+        const ty = clamp(p.y + Math.sin(a) * 200, 120, CFG.H - 50);
+        let minD = 1e9;
+        for (const b of S.blots) minD = Math.min(minD, Math.hypot(b.x - tx, b.y - ty));
+        if (S.front === 4) minD = Math.min(minD, Math.hypot(CFG.VORTEX_X - tx, CFG.VORTEX_Y - ty) - CFG.VORTEX_R);
+        const sc = Math.min(minD, 280) - Math.max(0, 130 - tx) * 0.3 - Math.max(0, tx - (CFG.W - 130)) * 0.3;
+        if (sc > best) { best = sc; bx = tx; by = ty; }
       }
-      // A front break freezes the sim in live play; the staging just
-      // keeps flying straight through it.
-      if (events & 4) world.frontTime = 0;
+      ctl.mx = bx; ctl.my = by;
+      if (nd < 90 && S.dashCd <= 0) ctl.pressed['Space'] = true;
+    } else if (nearestNote) {
+      ctl.mx = nearestNote.x; ctl.my = nearestNote.y;
+    } else {
+      ctl.mx = CFG.W / 2; ctl.my = CFG.H / 2;
     }
-    return { screen: SCREEN_PLAY, best: world.score };
+    return ctl;
   }
-  // The end scene: a weak pilot that chases letters and never dodges,
-  // so it is caught out once the blots thicken, as a hurried player is.
-  const limit = Math.floor(END_LIMIT_SECONDS / STEP);
-  for (let i = 0; i < limit; i += 1) {
-    const cmd = autopilot(world, 0.15, false);
-    stepWorld(world, STEP, { ...cmd, mx: world.player.x, my: world.player.y, mouseFresh: 99 });
-    if (world.over) break;
-    if (world.won) break;
+  // Weak pilot: slow reactions, chases notes, never dashes — it gets caught.
+  const fleeAt = 55;
+  if (nearestBlot && nd < fleeAt) {
+    const dx = p.x - nearestBlot.x, dy = p.y - nearestBlot.y;
+    const d = Math.hypot(dx, dy) || 1;
+    ctl.mx = p.x + (dx / d) * 220; ctl.my = p.y + (dy / d) * 220;
+  } else if (nearestNote) {
+    ctl.mx = nearestNote.x; ctl.my = nearestNote.y;
+  } else {
+    ctl.mx = CFG.W / 2; ctl.my = CFG.H / 2;
   }
-  return { screen: SCREEN_OVER, best: world.score };
+  return ctl;
+}
+
+// Run the sim until stopFn(S) is true or maxSteps run out. Breaks auto-pick.
+function runSim(S, skill, maxSteps, stopFn) {
+  const picks = ['wind', 'fold', 'wax'];
+  let pickIdx = 0;
+  for (let i = 0; i < maxSteps; i++) {
+    if (S.state === 'break') {
+      pickUpgrade(S, picks[pickIdx % picks.length]);
+      pickIdx++;
+      advanceFront(S);
+      continue;
+    }
+    if (S.state !== 'play') break;
+    stepWorld(S, pilotCtl(S, skill), DT);
+    if (stopFn && stopFn(S)) return i;
+  }
+  return maxSteps;
+}
+
+function stageShot(kind, seed) {
+  const S = createWorld(seed);
+  if (kind === 'start') {
+    for (let i = 0; i < 5 * 60; i++) stepWorld(S, { mx: 640, my: 360, mouseIn: false, keys: {}, pressed: {}, clicked: false }, DT);
+    S.state = 'title';
+  } else if (kind === 'play') {
+    S.state = 'play';
+    // Fast-forward to the Tempest climax: vortex up, HP falling, combo high,
+    // a score popup and the chain banner fresh in frame.
+    runSim(S, 'strong', 400 * 60, (s) =>
+      s.front === 4 && s.tempest.hp <= 60 && comboOf(s) >= 3.0 && (s.banner || s.popups.length > 0));
+  } else { // end: a weak pilot that gets caught, for the game-over screen.
+    S.state = 'play';
+    runSim(S, 'weak', 300 * 60, null);
+    if (S.state === 'play') { S.hull = 0; S.state = 'over'; S.best = Math.max(S.best, S.score); }
+  }
+  if (typeof window !== 'undefined') {
+    window.__staged = {
+      kind, state: S.state, front: S.front, score: S.score,
+      combo: comboOf(S), bestCombo: S.bestCombo, letters: S.letters,
+      upgrades: Object.keys(S.upgradesPicked).filter((k) => S.upgradesPicked[k] > 0),
+      tempestHp: S.tempest.hp, popups: S.popups.length, banner: S.banner ? S.banner.text : null,
+    };
+  }
+  return S;
 }

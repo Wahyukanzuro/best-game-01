@@ -1,129 +1,59 @@
-// PAPER STORM — mouse and keyboard input, one small object.
-// The plane answers the mouse (it steers toward the cursor) and the keys
-// (WASD or arrows drive it directly). Edge actions — dash, start, restart,
-// pause, mute, upgrade picks — are queued once per press and consumed by
-// the loop, so a held key never fires twice.
+// PAPER STORM v2 — input.js: keyboard + mouse, one job only.
+// Produces a plain control object the world steps with; the autopilot builds the
+// same shape, so live play and staged screenshots share one code path.
 
-export function createInput(canvas) {
-  const input = {
-    mouseX: 640,
-    mouseY: 360,
-    mouseFresh: 0, // seconds since the mouse last moved
-    keys: new Set(),
-    dashQueued: false,
-    startQueued: false,
-    restartQueued: false,
-    pauseQueued: false,
-    muteQueued: false,
-    choice: 0, // 1, 2 or 3 while an upgrade break is showing
-    clickX: -1,
-    clickY: -1,
-    clickQueued: false,
-  };
+const Input = {
+  mouseX: 640, mouseY: 360, mouseIn: false, mouseDown: false,
+  keys: {},        // code -> held
+  pressed: {},     // code -> pressed since last frame (one-shot)
+  clicked: false,  // mouse button pressed since last frame (one-shot)
+  _canvas: null,
 
-  function toCanvas(event) {
-    const rect = canvas.getBoundingClientRect();
+  init(canvas) {
+    this._canvas = canvas;
+    window.addEventListener('keydown', (e) => {
+      if (!this.keys[e.code]) this.pressed[e.code] = true;
+      this.keys[e.code] = true;
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+    });
+    window.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
+    canvas.addEventListener('mousemove', (e) => {
+      const r = canvas.getBoundingClientRect();
+      this.mouseX = (e.clientX - r.left) * (canvas.width / r.width);
+      this.mouseY = (e.clientY - r.top) * (canvas.height / r.height);
+      this.mouseIn = true;
+    });
+    canvas.addEventListener('mousedown', (e) => {
+      this.mouseDown = true; this.clicked = true;
+      const r = canvas.getBoundingClientRect();
+      this.mouseX = (e.clientX - r.left) * (canvas.width / r.width);
+      this.mouseY = (e.clientY - r.top) * (canvas.height / r.height);
+      this.mouseIn = true;
+    });
+    window.addEventListener('mouseup', () => { this.mouseDown = false; });
+    canvas.addEventListener('mouseleave', () => { this.mouseIn = false; });
+  },
+
+  // Snapshot the controls the world consumes this step.
+  snapshot() {
     return {
-      x: ((event.clientX - rect.left) / rect.width) * canvas.width,
-      y: ((event.clientY - rect.top) / rect.height) * canvas.height,
+      mx: this.mouseX, my: this.mouseY, mouseIn: this.mouseIn,
+      keys: this.keys, pressed: this.pressed, clicked: this.clicked,
     };
-  }
+  },
 
-  canvas.addEventListener('mousemove', (event) => {
-    const p = toCanvas(event);
-    input.mouseX = p.x;
-    input.mouseY = p.y;
-    input.mouseFresh = 0;
-  });
+  // One-shot flags are consumed at the end of each frame.
+  endFrame() {
+    this.pressed = {};
+    this.clicked = false;
+  },
 
-  canvas.addEventListener('mousedown', (event) => {
-    const p = toCanvas(event);
-    input.mouseX = p.x;
-    input.mouseY = p.y;
-    input.mouseFresh = 0;
-    input.clickX = p.x;
-    input.clickY = p.y;
-    input.clickQueued = true;
-    input.startQueued = true;
-  });
-
-  window.addEventListener('keydown', (event) => {
-    const key = event.key.toLowerCase();
-    if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(key)) {
-      event.preventDefault();
-    }
-    if (event.repeat) return;
-    input.keys.add(key);
-    if (key === ' ') input.dashQueued = true;
-    if (key === 'enter') input.startQueued = true;
-    if (key === 'r') input.restartQueued = true;
-    if (key === 'p') input.pauseQueued = true;
-    if (key === 'm') input.muteQueued = true;
-    if (key === '1') input.choice = 1;
-    if (key === '2') input.choice = 2;
-    if (key === '3') input.choice = 3;
-  });
-
-  window.addEventListener('keyup', (event) => {
-    input.keys.delete(event.key.toLowerCase());
-  });
-
-  window.addEventListener('blur', () => {
-    input.keys.clear();
-  });
-
-  // The loop calls this once per frame: age the mouse, then hand back the
-  // held direction keys as a unit vector (zero when none are held).
-  input.steer = function steer(dt) {
-    input.mouseFresh += dt;
-    let kx = 0;
-    let ky = 0;
-    if (input.keys.has('a') || input.keys.has('arrowleft')) kx -= 1;
-    if (input.keys.has('d') || input.keys.has('arrowright')) kx += 1;
-    if (input.keys.has('w') || input.keys.has('arrowup')) ky -= 1;
-    if (input.keys.has('s') || input.keys.has('arrowdown')) ky += 1;
-    if (kx !== 0 && ky !== 0) {
-      const len = Math.hypot(kx, ky);
-      kx /= len;
-      ky /= len;
-    }
-    return { kx, ky };
-  };
-
-  // Take the queued one-shot actions and clear them, so each press acts once.
-  input.takeQueued = function takeQueued() {
-    const out = {
-      dash: input.dashQueued,
-      start: input.startQueued,
-      restart: input.restartQueued,
-      pause: input.pauseQueued,
-      mute: input.muteQueued,
-      choice: input.choice,
-      click: input.clickQueued,
-      clickX: input.clickX,
-      clickY: input.clickY,
-    };
-    input.dashQueued = false;
-    input.startQueued = false;
-    input.restartQueued = false;
-    input.pauseQueued = false;
-    input.muteQueued = false;
-    input.choice = 0;
-    input.clickQueued = false;
-    return out;
-  };
-
-  // Drop every queued one-shot action without reading them: the loop calls
-  // this on each screen change so a stale press never leaks into the next one.
-  input.clearQueued = function clearQueued() {
-    input.dashQueued = false;
-    input.startQueued = false;
-    input.restartQueued = false;
-    input.pauseQueued = false;
-    input.muteQueued = false;
-    input.choice = 0;
-    input.clickQueued = false;
-  };
-
-  return input;
-}
+  axis(keys) {
+    let x = 0, y = 0;
+    if (keys['ArrowLeft'] || keys['KeyA']) x -= 1;
+    if (keys['ArrowRight'] || keys['KeyD']) x += 1;
+    if (keys['ArrowUp'] || keys['KeyW']) y -= 1;
+    if (keys['ArrowDown'] || keys['KeyS']) y += 1;
+    return { x, y };
+  },
+};

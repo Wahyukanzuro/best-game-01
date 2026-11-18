@@ -1,354 +1,321 @@
-// PAPER STORM — the simulation: fronts, blots, letters, the Tempest, hull,
-// combo, dash and upgrades. Pure logic, no drawing, no sound. Everything
-// random comes from the world's own seeded generator, so the same seed
-// always plays the same storm.
+// PAPER STORM v2 — world.js: the whole simulation. One job: state + rules.
+// Everything deterministic: every random draw comes from S.rng (mulberry32).
+// Live play and staged screenshots step the same function with the same control shape.
 
-import {
-  FIELD, STEP, TUNING, EVENT_HIT, EVENT_PICKUP, EVENT_FRONT, EVENT_OVER,
-  EVENT_WIN, EVENT_DASH, EVENT_POP, mulberry32,
-} from './config.js';
+function comboOf(S) {
+  return Math.min(1 + CFG.COMBO_STEP * Math.max(0, S.chain - 1), CFG.COMBO_MAX);
+}
 
-// The event flags live in config.js; re-export them so the loop can read
-// them from here alongside the world itself.
-export { EVENT_HIT, EVENT_PICKUP, EVENT_FRONT, EVENT_OVER, EVENT_WIN, EVENT_DASH, EVENT_POP };
+function dashCooldown(S) {
+  return CFG.DASH_CD / Math.pow(2, S.upgradesPicked.fold);
+}
 
-// The three upgrades offered between fronts. Picking one already owned
-// pays 500 points instead of stacking it.
-export const UPGRADES = [
-  { id: 'coat', key: '1', name: 'WAX COAT', desc: '+1 hull, patched and sealed' },
-  { id: 'fold', key: '2', name: 'SHARP FOLD', desc: 'Dash recharges twice as fast' },
-  { id: 'tailwind', key: '3', name: 'TAILWIND', desc: 'Letters drift toward your plane' },
-];
+function magnetRadius(S) {
+  return S.upgradesPicked.wind > 0 ? 90 + 90 * S.upgradesPicked.wind : 0;
+}
 
-export function createWorld(seed) {
-  const world = {
-    seed,
-    rng: mulberry32(seed),
-    time: 0,
-    front: 1,
-    frontTime: 0,
-    score: 0,
-    best: 0,
-    combo: 1,
-    comboTimer: 0,
-    lettersGot: 0,
-    hull: TUNING.hullStart,
-    maxHull: TUNING.hullStart,
-    dashCd: 0,
-    dashTime: 0,
-    shield: 0,
-    upgrades: { coat: false, fold: false, tailwind: false },
-    player: { x: 320, y: 360, vx: 0, vy: 0, angle: 0 },
-    blots: [],
-    letters: [],
-    parts: [],
-    pops: [],
-    vortex: null,
-    blotT: 0.8,
-    letterT: 0.5,
-    over: false,
-    won: false,
+function createWorld(seed) {
+  const rng = mulberry32(seed);
+  const S = {
+    rng, seed, time: 0, state: 'title', prevState: 'play',
+    front: 1, frontTime: 0, frontsCleared: 0,
+    hull: 3, maxHull: 3, score: 0, best: 0, letters: 0,
+    chain: 0, chainTimer: 0, bestCombo: 1,
+    dashCd: 0, dashTime: 0, dashDirX: 1, dashDirY: 0, shield: 0,
+    plane: { x: 640, y: 460, vx: 0, vy: 0, angle: -Math.PI / 2 },
+    blots: [], notes: [], particles: [], popups: [],
+    banner: null, shake: 0, flash: 0,
+    upgradesPicked: { wax: 0, fold: 0, wind: 0 }, picks: 0,
+    tempest: { hp: CFG.TEMPEST_HP, charge: 0, ringTimer: 1.5 },
+    blotTimer: 0.5, noteTimer: 0.3, elitesSpawned: 0,
+    closeCalls: 0, clouds: [], speckles: [], vignette: [],
   };
-  return world;
+  // Ambient decor, drawn from the same seeded stream (fixed creation order).
+  for (let i = 0; i < 14; i++) {
+    S.clouds.push({ x: rng() * CFG.W, y: rng() * CFG.H, w: 120 + rng() * 220, speed: 6 + rng() * 14, a: 0.10 + rng() * 0.12 });
+  }
+  for (let i = 0; i < 260; i++) {
+    S.speckles.push({ x: rng() * CFG.W, y: rng() * CFG.H, r: 0.6 + rng() * 1.4, a: 0.04 + rng() * 0.08 });
+  }
+  for (let i = 0; i <= 64; i++) {
+    const t = i / 64;
+    S.vignette.push({ x: t * CFG.W, y: 10 + Math.sin(t * 21 + seed) * 4 });
+  }
+  return S;
 }
 
-// Put the world back to the start of front 1 with a fresh generator.
-export function resetWorld(world, seed) {
-  const fresh = createWorld(seed);
-  for (const key of Object.keys(fresh)) world[key] = fresh[key];
+function startRun(S) {
+  const best = S.best;
+  const fresh = createWorld(S.seed);
+  fresh.best = best;
+  Object.keys(fresh).forEach((k) => { S[k] = fresh[k]; });
+  S.state = 'play';
 }
 
-// One blot: a wobbling ink mass drifting in from an edge, growing slowly.
-function spawnBlot(world) {
-  const rng = world.rng;
-  const edge = Math.floor(rng() * 4);
-  const r = TUNING.blotRadius[0] + rng() * (TUNING.blotRadius[1] - TUNING.blotRadius[0]);
-  const speed = TUNING.blotSpeed[world.front - 1] || TUNING.blotSpeed[2];
-  const blot = { x: 0, y: 0, vx: 0, vy: 0, r, r0: r, phase: rng() * Math.PI * 2, wob: 14 + rng() * 22 };
-  if (edge === 0) { blot.x = -r; blot.y = rng() * FIELD.height; blot.vx = speed * (0.7 + rng() * 0.5); blot.vy = (rng() - 0.5) * 40; }
-  if (edge === 1) { blot.x = FIELD.width + r; blot.y = rng() * FIELD.height; blot.vx = -speed * (0.7 + rng() * 0.5); blot.vy = (rng() - 0.5) * 40; }
-  if (edge === 2) { blot.x = rng() * FIELD.width; blot.y = -r; blot.vx = (rng() - 0.5) * 40; blot.vy = speed * (0.7 + rng() * 0.5); }
-  if (edge === 3) { blot.x = rng() * FIELD.width; blot.y = FIELD.height + r; blot.vx = (rng() - 0.5) * 40; blot.vy = -speed * (0.7 + rng() * 0.5); }
-  world.blots.push(blot);
+function addPopup(S, x, y, text, color, size) {
+  S.popups.push({ x, y, text, color: color || PALETTE.goldDeep, size: size || 22, life: 1.1, max: 1.1 });
 }
 
-// One stamped letter: a bright pickup drifting left, bobbing gently.
-function spawnLetter(world) {
-  const rng = world.rng;
-  world.letters.push({
-    x: FIELD.width + 30,
-    y: 60 + rng() * (FIELD.height - 120),
-    vx: -(14 + rng() * 22),
-    phase: rng() * Math.PI * 2,
-    rot: (rng() - 0.5) * 0.5,
-  });
-}
-
-// A ring of blots bursting out of the vortex during the Tempest.
-function spawnRing(world) {
-  const v = world.vortex;
-  const n = 8;
-  for (let i = 0; i < n; i += 1) {
-    const a = (i / n) * Math.PI * 2 + world.time * 0.3;
-    const speed = 120 + world.rng() * 40;
-    world.blots.push({
-      x: v.x, y: v.y,
-      vx: Math.cos(a) * speed, vy: Math.sin(a) * speed,
-      r: 16 + world.rng() * 8, r0: 16,
-      phase: world.rng() * Math.PI * 2, wob: 10,
-    });
+function addBurst(S, x, y, color, n, speed, size) {
+  for (let i = 0; i < n; i++) {
+    const a = S.rng() * Math.PI * 2;
+    const v = speed * (0.3 + S.rng() * 0.7);
+    S.particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0.5 + S.rng() * 0.5, max: 1, size: size * (0.6 + S.rng() * 0.8), color, kind: 'dot' });
   }
 }
 
-// Paper scraps, ink drops or gold sparkles, by kind.
-export function burst(world, x, y, kind, n) {
-  for (let i = 0; i < n; i += 1) {
-    const a = world.rng() * Math.PI * 2;
-    const sp = 60 + world.rng() * 180;
-    world.parts.push({
-      x, y,
-      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 40,
-      life: 0.5 + world.rng() * 0.5, maxLife: 1,
-      size: 3 + world.rng() * 6,
-      rot: world.rng() * Math.PI, vr: (world.rng() - 0.5) * 8,
-      kind,
-    });
+function addScraps(S, x, y) {
+  for (let i = 0; i < 10; i++) {
+    const a = S.rng() * Math.PI * 2;
+    S.particles.push({ x, y, vx: Math.cos(a) * 140, vy: Math.sin(a) * 140 - 40, life: 0.7 + S.rng() * 0.4, max: 1.1, size: 5 + S.rng() * 6, color: i % 2 ? PALETTE.cream : PALETTE.goldSoft, kind: 'scrap', rot: S.rng() * 6.28, vr: (S.rng() - 0.5) * 12 });
   }
 }
 
-function addPopup(world, x, y, text, kind) {
-  world.pops.push({ x, y, text, kind, life: 1.1 });
-}
-
-// Apply an upgrade picked on a break screen.
-export function applyUpgrade(world, id) {
-  if (id === 'coat') {
-    if (world.maxHull >= TUNING.hullMax) {
-      world.score += 500;
-      addPopup(world, world.player.x, world.player.y - 40, '+500', 'gold');
-      return;
-    }
-    world.maxHull += 1;
-    world.hull += 1;
-    world.upgrades.coat = true;
-  }
-  if (id === 'fold') {
-    if (world.upgrades.fold) {
-      world.score += 500;
-      addPopup(world, world.player.x, world.player.y - 40, '+500', 'gold');
-      return;
-    }
-    world.upgrades.fold = true;
-  }
-  if (id === 'tailwind') {
-    if (world.upgrades.tailwind) {
-      world.score += 500;
-      addPopup(world, world.player.x, world.player.y - 40, '+500', 'gold');
-      return;
-    }
-    world.upgrades.tailwind = true;
-  }
-  burst(world, world.player.x, world.player.y, 'gold', 14);
-}
-
-// Advance the world one fixed step. cmd carries the steering for this step:
-// { kx, ky, mx, my, mouseFresh, dash }. Returns an event bitmask.
-export function stepWorld(world, dt, cmd) {
-  let events = 0;
-  if (world.over || world.won) return events;
-  world.time += dt;
-  world.frontTime += dt;
-  if (world.comboTimer > 0) {
-    world.comboTimer -= dt;
-    if (world.comboTimer <= 0) world.combo = 1;
-  }
-  if (world.shield > 0) world.shield -= dt;
-  if (world.dashCd > 0) world.dashCd -= dt;
-  if (world.dashTime > 0) world.dashTime -= dt;
-
-  // --- The plane ------------------------------------------------------------
-  const p = world.player;
-  const dashing = world.dashTime > 0;
-  const maxSpeed = TUNING.playerSpeed * (dashing ? TUNING.dashSpeed : 1);
-  if (cmd.dash && world.dashCd <= 0 && !dashing) {
-    world.dashTime = TUNING.dashTime;
-    world.dashCd = world.upgrades.fold ? TUNING.dashCooldownFast : TUNING.dashCooldown;
-    events |= EVENT_DASH;
-    burst(world, p.x, p.y, 'paper', 10);
-    const dir = Math.atan2(p.vy, p.vx);
-    const hasDir = Math.hypot(p.vx, p.vy) > 20;
-    const a = hasDir ? dir : Math.atan2(cmd.my - p.y, cmd.mx - p.x);
-    p.vx = Math.cos(a) * TUNING.playerSpeed * TUNING.dashSpeed;
-    p.vy = Math.sin(a) * TUNING.playerSpeed * TUNING.dashSpeed;
-  }
-  if (cmd.kx !== 0 || cmd.ky !== 0) {
-    p.vx += cmd.kx * TUNING.playerAccel * dt;
-    p.vy += cmd.ky * TUNING.playerAccel * dt;
-  } else if (cmd.mouseFresh < 2) {
-    const dx = cmd.mx - p.x;
-    const dy = cmd.my - p.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist > 6) {
-      const want = Math.min(maxSpeed, dist * 6);
-      p.vx += ((dx / dist) * want - p.vx) * Math.min(1, dt * 8);
-      p.vy += ((dy / dist) * want - p.vy) * Math.min(1, dt * 8);
-    } else {
-      p.vx *= Math.max(0, 1 - dt * 4);
-      p.vy *= Math.max(0, 1 - dt * 4);
-    }
+function spawnBlot(S, ring) {
+  const t = FRONT_TUNING[S.front] || FRONT_TUNING[3];
+  const elite = !ring && S.elitesSpawned < t.elites && S.rng() < 0.10;
+  let x, y, vx, vy;
+  if (ring) {
+    const a = S.rng() * Math.PI * 2;
+    x = CFG.VORTEX_X + Math.cos(a) * 170; y = CFG.VORTEX_Y + Math.sin(a) * 170;
+    vx = Math.cos(a) * 46; vy = Math.sin(a) * 46;
   } else {
-    p.vx *= Math.max(0, 1 - dt * 4);
-    p.vy *= Math.max(0, 1 - dt * 4);
+    const edge = Math.floor(S.rng() * 4);
+    if (edge === 0) { x = -40; y = S.rng() * CFG.H; }
+    else if (edge === 1) { x = CFG.W + 40; y = S.rng() * CFG.H; }
+    else if (edge === 2) { x = S.rng() * CFG.W; y = -40; }
+    else { x = S.rng() * CFG.W; y = CFG.H + 40; }
+    const tx = 200 + S.rng() * 880, ty = 120 + S.rng() * 480;
+    const sp = t.blotSpeed[0] + S.rng() * (t.blotSpeed[1] - t.blotSpeed[0]);
+    const d = Math.hypot(tx - x, ty - y) || 1;
+    vx = (tx - x) / d * sp; vy = (ty - y) / d * sp;
   }
-  const speed = Math.hypot(p.vx, p.vy);
-  if (speed > maxSpeed) {
-    p.vx = (p.vx / speed) * maxSpeed;
-    p.vy = (p.vy / speed) * maxSpeed;
-  }
-  p.x = Math.max(18, Math.min(FIELD.width - 18, p.x + p.vx * dt));
-  p.y = Math.max(18, Math.min(FIELD.height - 18, p.y + p.vy * dt));
-  if (speed > 30) p.angle = Math.atan2(p.vy, p.vx);
+  const r = elite ? 48 + S.rng() * 10 : t.blotR[0] + S.rng() * (t.blotR[1] - t.blotR[0]);
+  if (elite) S.elitesSpawned++;
+  const pts = [];
+  for (let i = 0; i < 9; i++) pts.push(0.78 + S.rng() * 0.42);
+  S.blots.push({ x, y, vx, vy, r, r0: r, seed: S.rng() * 6.28, pts, elite, grazed: false, wob: 0.6 + S.rng() * 0.9 });
+}
 
-  // --- Spawns ---------------------------------------------------------------
-  world.blotT -= dt;
-  if (world.blotT <= 0 && world.blots.length < TUNING.blotCap && world.front < 4) {
-    spawnBlot(world);
-    const base = TUNING.blotInterval[world.front - 1];
-    world.blotT = base * (0.75 + world.rng() * 0.5);
+function spawnNote(S) {
+  const x = -30 + S.rng() * (CFG.W + 60);
+  const y = -30;
+  S.notes.push({ x, y, vx: (S.rng() - 0.5) * 26, vy: 34 + S.rng() * 30, r: 17, spin: (S.rng() - 0.5) * 1.2, rot: S.rng() * 6.28 });
+}
+
+function hurtPlane(S, x, y) {
+  if (S.shield > 0 || S.dashTime > 0) return;
+  S.hull -= 1;
+  S.shield = CFG.SHIELD_TIME;
+  S.chain = 0; S.chainTimer = 0;
+  S.shake = 14;
+  addBurst(S, x, y, PALETTE.ink, 22, 260, 4);
+  addPopup(S, S.plane.x, S.plane.y - 40, '-1 HULL', PALETTE.vermilion, 26);
+  Sound.hit();
+  if (S.hull <= 0) {
+    S.state = 'over';
+    S.best = Math.max(S.best, S.score);
+    Sound.lose();
   }
-  world.letterT -= dt;
-  if (world.letterT <= 0 && world.letters.length < TUNING.letterCap) {
-    spawnLetter(world);
-    world.letterT = TUNING.letterInterval * (0.8 + world.rng() * 0.4);
+}
+
+function pickUpgrade(S, id) {
+  if (id === 'wax') { S.maxHull = Math.min(5, S.maxHull + 1); S.hull = Math.min(S.maxHull, S.hull + 1); }
+  S.upgradesPicked[id] = (S.upgradesPicked[id] || 0) + 1;
+  S.picks++;
+  addPopup(S, S.plane.x, S.plane.y - 50, UPGRADES.find((u) => u.id === id).name + '!', PALETTE.goldDeep, 24);
+  Sound.front();
+}
+
+// Called after a break pick: move to the next front, or into the Tempest.
+function advanceFront(S) {
+  S.blotTimer = 0.5; S.noteTimer = 0.3; S.elitesSpawned = 0;
+  if (S.front < 3) {
+    S.front++;
+    S.frontTime = 0;
+    S.state = 'play';
+  } else {
+    S.front = 4;
+    S.frontTime = 0;
+    S.state = 'play';
+    S.tempest.hp = CFG.TEMPEST_HP;
+    S.tempest.charge = 0;
+    S.tempest.ringTimer = 1.5;
+  }
+}
+
+function stepWorld(S, ctl, dt) {
+  S.time += dt;
+  for (const c of S.clouds) { c.x += c.speed * dt; if (c.x - c.w > CFG.W) { c.x = -c.w; c.y = S.rng() * CFG.H; } }
+  // Ambient-only states: the storm drifts, nothing else moves.
+  if (S.state === 'title') {
+    if (S.blots.length < 8 && S.rng() < dt * 0.7) spawnBlot(S, false);
+    if (S.notes.length < 5 && S.rng() < dt * 0.5) spawnNote(S);
+    driftEntities(S, dt);
+    return;
+  }
+  if (S.state === 'break' || S.state === 'over' || S.state === 'win' || S.state === 'pause') {
+    updateFx(S, dt);
+    return;
   }
 
-  // --- The Tempest vortex ----------------------------------------------------
-  if (world.front === 4 && world.vortex) {
-    const v = world.vortex;
-    v.pulse += dt;
-    v.x += Math.sin(v.pulse * 0.7) * 12 * dt;
-    v.y += Math.cos(v.pulse * 0.9) * 10 * dt;
-    v.ringT -= dt;
-    if (v.ringT <= 0) {
-      spawnRing(world);
-      v.ringT = 2.6;
+  // ---- play ----
+  const p = S.plane;
+  const ax = Input.axis(ctl.keys || {});
+  let mx = 0, my = 0;
+  if (ax.x !== 0 || ax.y !== 0) {
+    const len = Math.hypot(ax.x, ax.y) || 1;
+    mx = ax.x / len; my = ax.y / len;
+  } else if (ctl.mouseIn) {
+    const dx = ctl.mx - p.x, dy = ctl.my - p.y;
+    const d = Math.hypot(dx, dy);
+    if (d > 6) { mx = dx / d; my = dy / d; }
+  }
+  if (ctl.pressed && ctl.pressed['Space'] && S.dashCd <= 0 && (mx !== 0 || my !== 0)) {
+    S.dashTime = CFG.DASH_TIME;
+    S.dashCd = dashCooldown(S);
+    S.dashDirX = mx; S.dashDirY = my;
+    addScraps(S, p.x, p.y);
+    Sound.dash();
+  }
+  if (S.dashTime > 0) {
+    S.dashTime -= dt;
+    p.vx = S.dashDirX * CFG.DASH_SPEED; p.vy = S.dashDirY * CFG.DASH_SPEED;
+  } else {
+    const sp = (ax.x !== 0 || ax.y !== 0) ? CFG.PLANE_SPEED : CFG.MOUSE_SPEED;
+    p.vx = mx * sp; p.vy = my * sp;
+  }
+  p.x = clamp(p.x + p.vx * dt, 24, CFG.W - 24);
+  p.y = clamp(p.y + p.vy * dt, 90, CFG.H - 24);
+  if (Math.hypot(p.vx, p.vy) > 20) p.angle = Math.atan2(p.vy, p.vx);
+  S.dashCd = Math.max(0, S.dashCd - dt);
+  S.shield = Math.max(0, S.shield - dt);
+
+  // ---- spawns ----
+  const t = FRONT_TUNING[S.front] || FRONT_TUNING[3];
+  if (S.front <= 3) {
+    S.blotTimer -= dt;
+    if (S.blotTimer <= 0 && S.blots.length < t.blotCap) { spawnBlot(S, false); S.blotTimer = t.blotEvery; }
+    S.noteTimer -= dt;
+    if (S.noteTimer <= 0) { spawnNote(S); S.noteTimer = t.letterEvery; }
+  } else {
+    S.noteTimer -= dt;
+    if (S.noteTimer <= 0) { spawnNote(S); S.noteTimer = 0.6; }
+    S.tempest.ringTimer -= dt;
+    if (S.tempest.ringTimer <= 0) {
+      S.tempest.ringTimer = CFG.RING_EVERY;
+      for (let i = 0; i < CFG.RING_COUNT; i++) spawnBlot(S, true);
     }
   }
 
-  // --- Blots: drift, wobble, grow, leave ------------------------------------
-  for (let i = world.blots.length - 1; i >= 0; i -= 1) {
-    const b = world.blots[i];
-    b.x += b.vx * dt;
-    b.y += b.vy * dt + Math.sin(world.time * 2 + b.phase) * b.wob * dt;
-    if (b.r < b.r0 * 1.5) b.r += 1.1 * dt;
-    if (b.x < -70 || b.x > FIELD.width + 70 || b.y < -70 || b.y > FIELD.height + 70) {
-      world.blots.splice(i, 1);
+  // ---- move entities ----
+  driftEntities(S, dt);
+  const mag = magnetRadius(S);
+  for (const n of S.notes) {
+    if (mag > 0) {
+      const d = Math.hypot(p.x - n.x, p.y - n.y);
+      if (d < mag && d > 1) { n.vx += (p.x - n.x) / d * 260 * dt; n.vy += (p.y - n.y) / d * 260 * dt; }
     }
   }
 
-  // --- Letters: drift, bob, magnetise ---------------------------------------
-  for (let i = world.letters.length - 1; i >= 0; i -= 1) {
-    const l = world.letters[i];
-    l.x += l.vx * dt;
-    l.y += Math.sin(world.time * 2.2 + l.phase) * 14 * dt;
-    if (world.upgrades.tailwind) {
-      const dx = p.x - l.x;
-      const dy = p.y - l.y;
-      const d = Math.hypot(dx, dy);
-      if (d < 180 && d > 1) {
-        l.x += (dx / d) * 130 * dt;
-        l.y += (dy / d) * 130 * dt;
+  // ---- collisions ----
+  for (let i = S.notes.length - 1; i >= 0; i--) {
+    const n = S.notes[i];
+    if (dist2(p.x, p.y, n.x, n.y) < (CFG.PLANE_R + n.r + 4) * (CFG.PLANE_R + n.r + 4)) {
+      S.notes.splice(i, 1);
+      S.letters++;
+      S.chain = S.chainTimer > 0 ? S.chain + 1 : 1;
+      S.chainTimer = CFG.COMBO_WINDOW;
+      const combo = comboOf(S);
+      S.bestCombo = Math.max(S.bestCombo, combo);
+      const gain = Math.round(CFG.LETTER_SCORE * combo);
+      S.score += gain;
+      addPopup(S, n.x, n.y - 14, '+' + gain, PALETTE.goldDeep, 22);
+      addBurst(S, n.x, n.y, PALETTE.gold, 10, 160, 3);
+      Sound.pickup();
+      const tier = Math.floor(combo);
+      if (tier >= 2 && Math.floor(comboOf({ ...S, chain: S.chain - 1 })) < tier) {
+        S.banner = { text: 'CHAIN x' + combo.toFixed(2) + '!', t: 1.4, max: 1.4 };
+      } else if (combo >= 3 && !S.banner) {
+        // Hot streak: keep the chain banner flashing while the combo holds.
+        S.banner = { text: 'CHAIN x' + combo.toFixed(2) + '!', t: 1.4, max: 1.4 };
+      }
+      if (S.front === 4) {
+        S.tempest.charge++;
+        if (S.tempest.charge >= CFG.SHATTER_LETTERS) {
+          S.tempest.charge = 0;
+          S.tempest.hp = Math.max(0, S.tempest.hp - CFG.SHATTER_DMG);
+          S.flash = 0.35;
+          addPopup(S, CFG.VORTEX_X, CFG.VORTEX_Y - 120, 'SHATTER!', PALETTE.vermilion, 34);
+          addBurst(S, CFG.VORTEX_X, CFG.VORTEX_Y, PALETTE.gold, 40, 320, 4);
+          Sound.shatter();
+          if (S.tempest.hp <= 0) {
+            S.state = 'win';
+            S.best = Math.max(S.best, S.score);
+            Sound.win();
+            return;
+          }
+        }
       }
     }
-    if (l.x < -50) world.letters.splice(i, 1);
   }
-
-  // --- Collisions ------------------------------------------------------------
-  const shielded = world.shield > 0 || world.dashTime > 0;
-  for (let i = world.blots.length - 1; i >= 0; i -= 1) {
-    const b = world.blots[i];
-    const d = Math.hypot(b.x - p.x, b.y - p.y);
-    if (d >= b.r + TUNING.playerRadius) continue;
-    if (dashing) {
-      world.blots.splice(i, 1);
-      world.score += TUNING.blotPopScore;
-      events |= EVENT_POP;
-      burst(world, b.x, b.y, 'ink', 10);
-      addPopup(world, b.x, b.y, `+${TUNING.blotPopScore}`, 'gold');
-      continue;
-    }
-    if (shielded) continue;
-    world.blots.splice(i, 1);
-    world.hull -= 1;
-    world.combo = 1;
-    world.comboTimer = 0;
-    world.shield = TUNING.shieldTime;
-    events |= EVENT_HIT;
-    burst(world, p.x, p.y, 'ink', 16);
-    if (world.hull <= 0) {
-      world.over = true;
-      events |= EVENT_OVER;
-      burst(world, p.x, p.y, 'paper', 26);
-      return events;
+  for (const b of S.blots) {
+    const rr = b.r + CFG.PLANE_R - 4;
+    const d2 = dist2(p.x, p.y, b.x, b.y);
+    if (d2 < rr * rr) { hurtPlane(S, b.x, b.y); if (S.state !== 'play') return; }
+    else if (!b.grazed && d2 < CFG.CLOSE_DIST * CFG.CLOSE_DIST) {
+      b.grazed = true;
+      S.score += CFG.CLOSE_CALL; S.closeCalls++;
+      addPopup(S, b.x, b.y - b.r - 8, 'CLOSE +' + CFG.CLOSE_CALL, PALETTE.inkSoft, 18);
     }
   }
-
-  for (let i = world.letters.length - 1; i >= 0; i -= 1) {
-    const l = world.letters[i];
-    if (Math.hypot(l.x - p.x, l.y - p.y) > 30) continue;
-    world.letters.splice(i, 1);
-    world.lettersGot += 1;
-    const gained = TUNING.letterScore * world.combo;
-    world.score += gained;
-    world.combo = Math.min(world.combo + 1, TUNING.comboMax);
-    world.comboTimer = TUNING.comboWindow;
-    events |= EVENT_PICKUP;
-    burst(world, l.x, l.y, 'gold', 8);
-    addPopup(world, l.x, l.y - 14, `+${gained}`, 'gold');
-    if (world.front === 4 && world.vortex) {
-      world.vortex.hp -= TUNING.tempestLetterDamage;
-      if (world.vortex.hp <= 0) {
-        world.vortex.hp = 0;
-        world.won = true;
-        events |= EVENT_WIN;
-        burst(world, world.vortex.x, world.vortex.y, 'gold', 40);
-        return events;
-      }
-    }
+  if (S.front === 4) {
+    const rr = CFG.VORTEX_R * 0.85 + CFG.PLANE_R;
+    if (dist2(p.x, p.y, CFG.VORTEX_X, CFG.VORTEX_Y) < rr * rr) { hurtPlane(S, CFG.VORTEX_X, CFG.VORTEX_Y); if (S.state !== 'play') return; }
   }
 
-  // --- Fronts ----------------------------------------------------------------
-  if (world.front < 3 && world.frontTime >= TUNING.frontDuration) {
-    world.front += 1;
-    world.frontTime = 0;
-    events |= EVENT_FRONT;
-  } else if (world.front === 3 && world.frontTime >= TUNING.frontDuration) {
-    world.front = 4;
-    world.frontTime = 0;
-    world.vortex = {
-      x: FIELD.width / 2, y: FIELD.height / 2,
-      r: 74, hp: TUNING.tempestHP, maxHp: TUNING.tempestHP,
-      pulse: 0, ringT: 1.2,
-    };
-    events |= EVENT_FRONT;
+  // ---- timers ----
+  if (S.chainTimer > 0) { S.chainTimer -= dt; if (S.chainTimer <= 0) S.chain = 0; }
+  S.frontTime += dt;
+  if (S.frontTime >= CFG.FRONT_DUR) {
+    S.frontsCleared++;
+    S.state = 'break';
+    Sound.front();
   }
+  updateFx(S, dt);
+  Sound.setWind(S.front === 4 ? 1 : S.front / 4);
+}
 
-  // --- Particles and popups ---------------------------------------------------
-  for (let i = world.parts.length - 1; i >= 0; i -= 1) {
-    const pt = world.parts[i];
-    pt.life -= dt;
-    if (pt.life <= 0) { world.parts.splice(i, 1); continue; }
-    pt.x += pt.vx * dt;
-    pt.y += pt.vy * dt;
-    pt.vy += 60 * dt;
-    pt.rot += pt.vr * dt;
+function driftEntities(S, dt) {
+  for (let i = S.blots.length - 1; i >= 0; i--) {
+    const b = S.blots[i];
+    const wob = Math.sin(S.time * b.wob + b.seed) * 22;
+    b.x += (b.vx + Math.cos(b.seed) * wob * 0.4) * dt;
+    b.y += (b.vy + Math.sin(b.seed) * wob * 0.4) * dt;
+    b.r = Math.min(b.r0 * 1.35, b.r + 0.35 * dt);
+    if (b.x < -120 || b.x > CFG.W + 120 || b.y < -120 || b.y > CFG.H + 120) S.blots.splice(i, 1);
   }
-  for (let i = world.pops.length - 1; i >= 0; i -= 1) {
-    const pop = world.pops[i];
-    pop.life -= dt;
-    pop.y -= 34 * dt;
-    if (pop.life <= 0) world.pops.splice(i, 1);
+  for (let i = S.notes.length - 1; i >= 0; i--) {
+    const n = S.notes[i];
+    n.x += n.vx * dt; n.y += n.vy * dt; n.rot += n.spin * dt;
+    if (n.y > CFG.H + 60 || n.x < -80 || n.x > CFG.W + 80) S.notes.splice(i, 1);
   }
+}
 
-  return events;
+function updateFx(S, dt) {
+  for (let i = S.particles.length - 1; i >= 0; i--) {
+    const pt = S.particles[i];
+    pt.x += pt.vx * dt; pt.y += pt.vy * dt;
+    pt.vy += 60 * dt; pt.life -= dt;
+    if (pt.rot !== undefined) pt.rot += (pt.vr || 0) * dt;
+    if (pt.life <= 0) S.particles.splice(i, 1);
+  }
+  for (let i = S.popups.length - 1; i >= 0; i--) {
+    const pp = S.popups[i];
+    pp.y -= 34 * dt; pp.life -= dt;
+    if (pp.life <= 0) S.popups.splice(i, 1);
+  }
+  if (S.banner) { S.banner.t -= dt; if (S.banner.t <= 0) S.banner = null; }
+  if (S.shake > 0) S.shake = Math.max(0, S.shake - 42 * dt);
+  if (S.flash > 0) S.flash = Math.max(0, S.flash - dt);
 }
